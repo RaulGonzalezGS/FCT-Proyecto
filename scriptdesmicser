@@ -1,0 +1,100 @@
+#!/bin/bash
+
+# Direcciones ip de las interfaces de red que se hacen conflicto
+interfazdocker="$(ip addr show docker0 | egrep 'inet ' | awk -F' ' '{print $2}')"
+interfazswarm="$(ip addr show docker_gwbridge | egrep 'inet ' | awk -F' ' '{print $2}')"
+interfazkubernetes="$(ip addr show cni0 | egrep 'inet ' | awk -F' ' '{print $2}')"
+
+# Asignación del direccionamiento de red
+if [[ $2 == "Por_defecto" ]]; then
+	direccionamiento="172.19.0.0/16"
+else
+	direccionamiento=$2
+	direcgateway="$(echo $direccionamiento | cut -d'.' -f1,2,3).1/$(echo $direccionamiento | cut -d'/' -f2)"
+
+	if [[ $interfazdocker == $direcgateway ]] || [[ $interfazswarm == $direcgateway ]]; then
+        	direccionamiento="172.19.0.0/16"
+        fi
+fi
+
+dirredsinmas="$(echo $direccionamiento | cut -d'/' -f1)"
+dirmas="$(echo $direccionamiento | cut -d'/' -f2)"
+
+# Eliminación de las redes de Docker que se hacen conflicto
+if [[ $3 == "Sin_HA" ]] && [[ $4 == "Sin_HA" ]]; then
+	HA="Sin HA"
+	docker network rm root_puppet > /dev/null 2> /dev/null
+
+	if [[ $interfazkubernetes == $direcgateway ]]; then
+        	ip link set down cni0
+        fi
+
+else
+	ssh -i rootllavecluster root@192.168.20.16 "docker network rm root_puppet" > /dev/null 2> /dev/null
+
+	if [[ $3 == "Docker_Swarm" ]]; then
+		docker network rm root_puppet > /dev/null 2> /dev/null
+	fi
+
+
+	# Asignación del direccionamiento en la arquitectura de los pods de Kubernetes
+	if [[ $3 == "Kubernetes" ]]; then
+
+		ip link set up cni0
+		sed -i "s/\- --cluster-cidr=.*/- --cluster-cidr=$dirredsinmas\/$dirmas/g" /etc/kubernetes/manifests/kube-controller-manager.yaml
+
+		# Archivo generado del comando, kubectl get no $hostname -o yaml >> file.yaml
+		sed -i "s/v:.*/v:\"$dirredsinmas\/$dirmas\": {}/g" file.yaml
+		sed -i "s/^\ \+podCIDR:.*/    podCIDR: $dirredsinmas\/$dirmas/g" file.yaml
+		sed -i "s/^\ \+\-.\+\/[0-9]*$/    - $dirredsinmas\/$dirmas/g" file.yaml
+		kubectl delete no puppet entornolamppuppet > /dev/null 2> /dev/null
+		kubectl create -f file.yaml > /dev/null 2> /dev/null
+
+		sed -i "s/^\ \+\"Network\":.*/      \"Network\": \"$dirredsinmas\/$dirmas\",/g" kube-flannel.yml
+		kubectl apply -f kube-flannel.yml > /dev/null 2> /dev/null
+
+		ip link delete cni0; ip link delete flannel.1
+		ssh -i rootllavecluster root@192.168.20.16 "ip link delete cni0; ip link delete flannel.1"
+		kubectl delete pod --selector=app=flannel -n kube-system > /dev/null 2> /dev/null
+		kubectl delete pod --selector=k8s-app=kube-dns -n kube-system > /dev/null 2> /dev/null
+	fi
+fi
+
+
+# Despliegue de los microservicios
+if [[ $1 == "Wordpress" ]]; then
+
+
+	# Despliegue del microservicio en Docker sin HA
+	if [[ $HA == "Sin HA" ]]; then
+
+		dirwordpress="$(echo $direccionamiento | cut -d'.' -f1,2,3)".25
+		dirmysql="$(echo $direccionamiento | cut -d'.' -f1,2,3)".26
+
+		sed -i "s/ipv4_address: .*25$/ipv4_address: $dirwordpress/g" docker-composedocker.yaml
+		sed -i "s/ipv4_address: .*26$/ipv4_address: $dirmysql/g" docker-composedocker.yaml
+		sed -i "s/- subnet.*/- subnet: $dirredsinmas\/$dirmas/g" docker-composedocker.yaml
+		/root/docker-compose -f docker-composedocker.yaml up -d > /dev/null 2> /dev/null
+		docker exec wordpress sed -i "s/define( 'DB_HOST'.*/define( 'DB_HOST', '$dirmysql' );/g" /var/www/wordpress/wp-config.php
+	fi
+
+
+	# Despliegue del microservicio abastecido en HA con Docker Swarm
+	if [[ $3 == "Docker_Swarm" ]]; then
+
+		/root/docker-compose -f docker-composecluster.yaml up -d > /dev/null 2> /dev/null
+		sed -i "s/- subnet.*/- subnet: $dirredsinmas\/$dirmas/g" docker-compose-swarm.yaml
+		sed -i "s/replicas:.*/replicas: $4/g" docker-compose-swarm.yaml
+		docker stack deploy -c docker-compose-swarm.yaml wordpress > /dev/null 2> /dev/null
+	fi
+
+
+	# Despliegue del microservicio abastecido en HA con Kubernetes
+	if [[ $3 == "Kubernetes" ]]; then
+
+		ssh -i rootllavecluster root@192.168.20.16 "/root/docker-compose -f docker-composecluster.yaml up -d" > /dev/null 2> /dev/null
+		sed -i "s/replicas:.*/replicas: $4/g" debianpup-deployment.yaml
+		kubectl create -f debianpup-deployment.yaml > /dev/null 2> /dev/null
+		kubectl create -f debianpup-service.yaml > /dev/null 2> /dev/null
+	fi
+fi
