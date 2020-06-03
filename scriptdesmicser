@@ -8,6 +8,7 @@ interfazkubernetes="$(ip addr show cni0 | egrep 'inet ' | awk -F' ' '{print $2}'
 # Asignación del direccionamiento de red
 if [[ $2 == "Por_defecto" ]]; then
 	direccionamiento="172.19.0.0/16"
+	direcgateway="$(echo $direccionamiento | cut -d'.' -f1,2,3).1/$(echo $direccionamiento | cut -d'/' -f2)"
 else
 	direccionamiento=$2
 	direcgateway="$(echo $direccionamiento | cut -d'.' -f1,2,3).1/$(echo $direccionamiento | cut -d'/' -f2)"
@@ -57,6 +58,7 @@ else
 		ssh -i rootllavecluster root@192.168.20.16 "ip link delete cni0; ip link delete flannel.1"
 		kubectl delete pod --selector=app=flannel -n kube-system > /dev/null 2> /dev/null
 		kubectl delete pod --selector=k8s-app=kube-dns -n kube-system > /dev/null 2> /dev/null
+		ssh -i rootllavecluster root@192.168.20.16 "ip link delete cni0"
 	fi
 fi
 
