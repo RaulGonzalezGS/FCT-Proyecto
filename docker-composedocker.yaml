@@ -1,0 +1,29 @@
+version: '3'
+services:
+  debianpup1:
+    container_name: wordpress
+# Imagen creada a partir de un archjvo Dockerfile aprovisionada con puppet
+    image: wordpress
+    command: bash -c "/etc/init.d/apache2 restart && tail -f /dev/null"
+    ports:
+      - '80:80'
+    networks:
+      puppet:
+        ipv4_address: 192.168.15.25
+
+  debianpup2:
+    container_name: mysql
+# Imagen creada a partir de un archjvo Dockerfile aprovisionada con puppet
+    image: mysql
+    command: bash -c "/etc/init.d/mysql restart && tail -f /dev/null"
+    networks:
+      puppet:
+        ipv4_address: 192.168.15.26
+
+networks:
+  puppet:
+    driver: bridge
+    ipam:
+      driver: default
+      config:
+        - subnet: 192.168.15.0/24
